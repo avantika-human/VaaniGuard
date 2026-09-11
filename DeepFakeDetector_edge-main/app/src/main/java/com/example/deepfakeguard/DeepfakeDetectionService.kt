@@ -37,7 +37,8 @@ class DeepfakeDetectionService : Service() {
         
         // Audio processing setup
         private const val SAMPLE_RATE = 16000
-        private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_STEREO  // Stereo for CRNN
+
+        private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
         private const val BUFFER_SIZE_FACTOR = 4
         
@@ -152,6 +153,7 @@ class DeepfakeDetectionService : Service() {
         
         startForeground(NOTIFICATION_ID, createNotification("Monitoring call for deepfakes..."))
         showOverlay()
+
         startAudioMonitoring()
     }
     
@@ -195,6 +197,7 @@ class DeepfakeDetectionService : Service() {
             Timber.i("✅ ML model loaded successfully!")
             Timber.d("Model ready: ${isReadyForAnalysis()}")
             
+
             // Update notification
             serviceScope.launch(Dispatchers.Main) {
                 val notification = createNotification("Model loaded - Ready to analyze audio")
@@ -217,238 +220,243 @@ class DeepfakeDetectionService : Service() {
     
     private fun getModelFile(): File {
         // Check for model in internal storage
-        val assetsModelFile = File(filesDir, "deepfake_detector.pt")
+        val aasistModelFile  = File(filesDir, "AASIST-L-mobile.pt")
         
-        Timber.d("Model path: ${assetsModelFile.absolutePath}")
-        Timber.d("Exists: ${assetsModelFile.exists()}")
+        Timber.d("AASIST model path: ${aasistModelFile.absolutePath}")
+        Timber.d("Exists: ${aasistModelFile.exists()}")
         
-        if (!assetsModelFile.exists()) {
+        if (!aasistModelFile.exists()) {
             // Copy from assets to internal storage
             try {
-                Timber.d("Copying from assets/models/deepfake_detector.pt...")
+                Timber.d("Copying AASIST-L-mobile.pt from assets...")
                 
-                assets.open("models/deepfake_detector.pt").use { input ->
-                    FileOutputStream(assetsModelFile).use { output ->
+                assets.open("models/AASIST-L-mobile.pt").use { input ->
+                    FileOutputStream(aasistModelFile).use { output ->
                         val bytesCopied = input.copyTo(output)
                         Timber.d("Copied $bytesCopied bytes from assets")
                     }
                 }
                 
-                Timber.i("✅ Model copied from assets to: ${assetsModelFile.absolutePath}")
-                Timber.d("Copied file size: ${assetsModelFile.length()} bytes")
+                Timber.i("✅ AASIST-L-mobile.pt copied from assets to: ${aasistModelFile.absolutePath}")
+                Timber.d("Copied file size: ${aasistModelFile.length()} bytes")
                 
             } catch (e: Exception) {
-                Timber.e(e, "❌ Failed to copy model from assets")
+                Timber.e(e, "❌ Failed to copy AASIST-L-mobile.pt from assets")
             }
         } else {
-            Timber.d("Model file already exists, size: ${assetsModelFile.length()} bytes")
+            Timber.d("AASIST-L-mobile.pt already exists, size: ${aasistModelFile.length()} bytes")
         }
         
-        return assetsModelFile
+        return aasistModelFile
     }
-    
+
+// ------------------------------------------------------------------------------------------------------------------------------------------
+
     private fun startAudioMonitoring() {
         if (isRecording.get()) {
             Timber.w("Audio monitoring already active")
             return
         }
-        
+
         try {
-            val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT) * BUFFER_SIZE_FACTOR
-            
-            // Audio sources in priority order
-            val audioSources = arrayOf(
-                MediaRecorder.AudioSource.VOICE_DOWNLINK,       // 🎯 Other caller only
-                MediaRecorder.AudioSource.VOICE_CALL,           // Full call audio
-                MediaRecorder.AudioSource.VOICE_UPLINK,         // Your voice only  
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,  // Call-optimized mic
-                MediaRecorder.AudioSource.UNPROCESSED,          // Raw microphone
-                MediaRecorder.AudioSource.MIC,                  // Basic microphone
-                MediaRecorder.AudioSource.DEFAULT               // Fallback
-            )
-            
-            var tempAudioRecord: AudioRecord? = null
-            var lastError: String? = null
-            
-            for (audioSource in audioSources) {
-                try {
-                    val sourceName = when(audioSource) {
-                        MediaRecorder.AudioSource.VOICE_CALL -> "VOICE_CALL (both)"
-                        MediaRecorder.AudioSource.VOICE_DOWNLINK -> "VOICE_DOWNLINK 🎯"
-                        MediaRecorder.AudioSource.VOICE_UPLINK -> "VOICE_UPLINK (you)"
-                        MediaRecorder.AudioSource.VOICE_COMMUNICATION -> "VOICE_COMM"
-                        MediaRecorder.AudioSource.UNPROCESSED -> "UNPROCESSED"
-                        MediaRecorder.AudioSource.MIC -> "MIC"
-                        MediaRecorder.AudioSource.DEFAULT -> "DEFAULT"
-                        else -> "UNKNOWN ($audioSource)"
-                    }
-                    Timber.d("🎙️ Trying: $sourceName")
-                    
-                    // For call-specific sources, try different configurations
-                    if (audioSource == MediaRecorder.AudioSource.VOICE_DOWNLINK || 
-                        audioSource == MediaRecorder.AudioSource.VOICE_CALL ||
-                        audioSource == MediaRecorder.AudioSource.VOICE_UPLINK) {
-                        
-                        // Try different channel configs
-                        val channelConfigs = arrayOf(
-                            AudioFormat.CHANNEL_IN_STEREO,  // Preferred
-                            AudioFormat.CHANNEL_IN_MONO,   // Fallback
-                            CHANNEL_CONFIG                  // Original
-                        )
-                        
-                        for (channelConfig in channelConfigs) {
-                            try {
-                                val adjustedBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, channelConfig, AUDIO_FORMAT) * BUFFER_SIZE_FACTOR
-                                if (adjustedBufferSize > 0) {
-                                    Timber.d("🔧 $sourceName config: $channelConfig")
-                                    
-                                    tempAudioRecord = AudioRecord(
-                                        audioSource,
-                                        SAMPLE_RATE,
-                                        channelConfig,
-                                        AUDIO_FORMAT,
-                                        adjustedBufferSize
-                                    )
-                                    
-                                    if (tempAudioRecord.state == AudioRecord.STATE_INITIALIZED) {
-                                        Timber.i("✅ SUCCESS: $sourceName")
-                                        break  // Success! Use this configuration
-                                    } else {
-                                        tempAudioRecord.release()
-                                        tempAudioRecord = null
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                Timber.w("Channel config $channelConfig failed for $sourceName: ${e.message}")
-                                tempAudioRecord?.release()
-                                tempAudioRecord = null
-                            }
-                        }
-                    } else {
-                        // Use standard configuration for non-call sources
-                        tempAudioRecord = AudioRecord(
-                            audioSource,
-                            SAMPLE_RATE,
-                            CHANNEL_CONFIG,
-                            AUDIO_FORMAT,
-                            bufferSize
-                        )
-                    }
-                    
-                    if (tempAudioRecord != null && tempAudioRecord.state == AudioRecord.STATE_INITIALIZED) {
-                        Timber.i("✅ AudioRecord initialized successfully with source: $sourceName")
-                        this.audioRecord = tempAudioRecord
-                        
-                        // Store which source we're using for optimization
-                        currentAudioSource = audioSource
-                        break
-                    } else {
-                        Timber.w("AudioRecord state not initialized for source: $audioSource")
-                        tempAudioRecord?.release()
-                        tempAudioRecord = null
-                    }
-                } catch (e: Exception) {
-                    Timber.w(e, "Failed to initialize AudioRecord with source: $audioSource")
-                    lastError = e.message
-                    tempAudioRecord?.release()
-                    tempAudioRecord = null
-                }
-            }
-            
-            if (this.audioRecord == null) {
-                Timber.e("Failed to initialize AudioRecord with any audio source. Last error: $lastError")
-                
-                // Show recording unavailable
-                serviceScope.launch(Dispatchers.Main) {
-                    val notification = createNotification("Call recording not available")
-                    val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                    notificationManager.notify(NOTIFICATION_ID, notification)
-                }
-                return
-            }
-            
-            this.audioRecord?.startRecording()
-            isRecording.set(true)
-            
-            // Configure audio settings for better call recording
-            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            
-            // Save original settings for restoration later
+            Timber.i("🎙️ Starting audio monitoring")
+
+            /*
+             * ---------------------------------------------------------
+             * STEP 1: Configure audio routing BEFORE creating AudioRecord
+             * ---------------------------------------------------------
+             *
+             * This is important because changing the communication route
+             * after AudioRecord has started can invalidate the recorder.
+             */
+
+            val audioManager =
+                getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
             originalAudioMode = audioManager.mode
             originalSpeakerState = isSpeakerphoneActive()
-            
-            // Optimize for call recording based on audio source
+
+            Timber.d(
+                "🎛️ Original audio state: " +
+                        "mode=$originalAudioMode, " +
+                        "speaker=$originalSpeakerState"
+            )
+
             try {
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-                
-                // If we can't get direct call audio, enable speakerphone to capture both sides
-                val needsSpeakerphone = when(currentAudioSource) {
-                    MediaRecorder.AudioSource.VOICE_CALL,      // Direct call audio - no need
-                    MediaRecorder.AudioSource.VOICE_DOWNLINK,  // Other caller only - no need  
-                    MediaRecorder.AudioSource.VOICE_UPLINK -> false // Your voice only - no need
-                    
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION, // Mic for calls - help with speaker
-                    MediaRecorder.AudioSource.UNPROCESSED,         // Raw mic - help with speaker
-                    MediaRecorder.AudioSource.MIC,                 // Basic mic - help with speaker
-                    MediaRecorder.AudioSource.DEFAULT -> true      // Fallback - help with speaker
-                    
-                    else -> true
+
+                if (!originalSpeakerState) {
+                    setSpeakerphoneOn(true)
                 }
-                
-                if (needsSpeakerphone && !originalSpeakerState) {
-                                                setSpeakerphoneOn(true)
-                    Timber.i("🔊 Enabled speaker for better capture (source: $currentAudioSource)")
-                    
-                                            // Optimize audio settings
-                        try {
-                            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
-                            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxVolume, 0)
-                            
-                            audioManager.requestAudioFocus(
-                                null,
-                                AudioManager.STREAM_VOICE_CALL,
-                                AudioManager.AUDIOFOCUS_GAIN
-                            )
-                            
-                            Timber.d("📢 Audio optimized")
-                        } catch (e: Exception) {
-                            Timber.w(e, "Audio optimization failed")
-                        }
-                }
-                
-                Timber.d("Audio: mode=${audioManager.mode}, speaker=${isSpeakerphoneActive()}, source=$currentAudioSource")
-                Timber.d("Saved: mode=$originalAudioMode, speaker=$originalSpeakerState")
+
+                Timber.i(
+                    "🎛️ Audio route configured: " +
+                            "mode=${audioManager.mode}, " +
+                            "communicationDevice=${audioManager.communicationDevice?.productName}"
+                )
+
             } catch (e: Exception) {
-                Timber.w(e, "Failed to optimize audio settings")
+                Timber.w(
+                    e,
+                    "⚠️ Audio routing configuration failed"
+                )
             }
-            
-            // Start audio processing in background
+
+            /*
+             * ---------------------------------------------------------
+             * STEP 2: Create a SIMPLE microphone recorder
+             * ---------------------------------------------------------
+             *
+             * AASIST receives a mono waveform, so use mono capture.
+             */
+
+            val minBufferSize = AudioRecord.getMinBufferSize(
+                SAMPLE_RATE,
+                CHANNEL_CONFIG,
+                AUDIO_FORMAT
+            )
+
+            if (minBufferSize <= 0) {
+                throw IllegalStateException(
+                    "Invalid AudioRecord buffer size: $minBufferSize"
+                )
+            }
+
+            val bufferSize =
+                minBufferSize * BUFFER_SIZE_FACTOR
+
+            Timber.d(
+                "🎙️ AudioRecord config: " +
+                        "source=MIC, " +
+                        "sampleRate=$SAMPLE_RATE, " +
+                        "channel=MONO, " +
+                        "bufferSize=$bufferSize"
+            )
+
+            val record = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                SAMPLE_RATE,
+                CHANNEL_CONFIG,
+                AUDIO_FORMAT,
+                bufferSize
+            )
+
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                record.release()
+
+                throw IllegalStateException(
+                    "AudioRecord failed to initialize"
+                )
+            }
+
+            audioRecord = record
+            currentAudioSource = MediaRecorder.AudioSource.MIC
+
+            Timber.i(
+                "✅ AudioRecord initialized successfully with source: MIC"
+            )
+
+
+            /*
+             * ---------------------------------------------------------
+             * STEP 3: Start recording
+             * ---------------------------------------------------------
+             */
+
+            record.startRecording()
+
+            if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                record.release()
+                audioRecord = null
+
+                throw IllegalStateException(
+                    "AudioRecord did not enter RECORDING state"
+                )
+            }
+
+            isRecording.set(true)
+
+            Timber.i(
+                "🎙️ Recording state=${record.recordingState}"
+            )
+
+
+
+            /*
+             * ---------------------------------------------------------
+             * STEP 4: Start the audio processing coroutine
+             * ---------------------------------------------------------
+             */
+
             audioProcessingJob = serviceScope.launch(Dispatchers.IO) {
                 processAudioStream()
             }
-            
-            Timber.i("✅ Audio monitoring started successfully")
-            
-            // Update notification with status
+
+            Timber.i(
+                "✅ Audio monitoring started successfully"
+            )
+
+
+            /*
+             * ---------------------------------------------------------
+             * STEP 5: Update notification
+             * ---------------------------------------------------------
+             */
+
             serviceScope.launch(Dispatchers.Main) {
-                val sourceDesc = when(currentAudioSource) {
-                    MediaRecorder.AudioSource.VOICE_CALL -> "🔴 Full call"
-                    MediaRecorder.AudioSource.VOICE_DOWNLINK -> "🔴 Other caller"
-                    MediaRecorder.AudioSource.VOICE_UPLINK -> "🔴 Your voice"
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION -> "🔴 Microphone"
-                    else -> "🔴 Call audio"
-                }
-                
-                val speakerInfo = if (isSpeakerphoneActive()) " (speaker)" else ""
-                val notification = createNotification("$sourceDesc$speakerInfo - Detection active")
-                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                notificationManager.notify(NOTIFICATION_ID, notification)
+
+                val speakerInfo =
+                    if (isSpeakerphoneActive()) {
+                        " (speaker)"
+                    } else {
+                        ""
+                    }
+
+                val notification =
+                    createNotification(
+                        "🔴 Call audio monitoring active$speakerInfo"
+                    )
+
+                val notificationManager =
+                    getSystemService(
+                        Context.NOTIFICATION_SERVICE
+                    ) as NotificationManager
+
+                notificationManager.notify(
+                    NOTIFICATION_ID,
+                    notification
+                )
             }
-            
+
         } catch (e: Exception) {
-            Timber.e(e, "Failed to start audio monitoring")
+
+            Timber.e(
+                e,
+                "❌ Failed to start audio monitoring"
+            )
+
+            isRecording.set(false)
+
+            audioRecord?.release()
+            audioRecord = null
+
+            try {
+                val audioManager =
+                    getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+                audioManager.mode = originalAudioMode
+                setSpeakerphoneOn(originalSpeakerState)
+
+            } catch (restoreException: Exception) {
+                Timber.w(
+                    restoreException,
+                    "⚠️ Failed to restore audio state"
+                )
+            }
         }
     }
+
+// ---------------------------------------------------------------------
     
     private fun stopAudioMonitoring() {
         isRecording.set(false)
@@ -478,139 +486,386 @@ class DeepfakeDetectionService : Service() {
         
         Timber.i("Audio monitoring stopped")
     }
-    
+
+// ------------------------------------------------------------------------
     private suspend fun processAudioStream() {
-        val chunkSamples = (SAMPLE_RATE * AUDIO_CHUNK_DURATION_MS) / 1000
-        val overlapSamples = (SAMPLE_RATE * OVERLAP_DURATION_MS) / 1000
-        val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
-        
+
+        val chunkSamples =
+            (SAMPLE_RATE * AUDIO_CHUNK_DURATION_MS) / 1000
+
+        val overlapSamples =
+            (SAMPLE_RATE * OVERLAP_DURATION_MS) / 1000
+
+        val record = audioRecord
+            ?: run {
+                Timber.e("❌ AudioRecord is null")
+                return
+            }
+
+        val bufferSize =
+            AudioRecord.getMinBufferSize(
+                SAMPLE_RATE,
+                CHANNEL_CONFIG,
+                AUDIO_FORMAT
+            )
+
+        if (bufferSize <= 0) {
+            Timber.e(
+                "❌ Invalid AudioRecord buffer size: $bufferSize"
+            )
+            return
+        }
+
         val audioBuffer = ShortArray(bufferSize)
+
         val audioChunk = mutableListOf<Short>()
+
         var chunkId = 0
-        
-        Timber.d("Audio loop: $chunkSamples samples/chunk")
-        
-        while (isRecording.get() && currentCoroutineContext().isActive) {
+
+        Timber.d(
+            "🎙️ Audio loop started"
+        )
+
+        Timber.d(
+            "🎙️ Target chunk: " +
+                    "$chunkSamples samples " +
+                    "(${AUDIO_CHUNK_DURATION_MS} ms)"
+        )
+
+        Timber.d(
+            "🎙️ Buffer size: $bufferSize samples"
+        )
+
+        while (
+            isRecording.get() &&
+            currentCoroutineContext().isActive
+        ) {
+
             try {
-                val bytesRead = audioRecord?.read(audioBuffer, 0, bufferSize) ?: 0
-                
-                if (bytesRead > 0) {
-                    // Add new audio data to chunk
-                    for (i in 0 until bytesRead) {
-                        audioChunk.add(audioBuffer[i])
-                    }
-                    
-                    // Process chunk when we have enough samples
-                    if (audioChunk.size >= chunkSamples) {
-                        val chunkToProcess = audioChunk.take(chunkSamples).toShortArray()
-                        
-                        // Process this chunk for deepfake detection
-                        processAudioChunk(chunkToProcess, chunkId++)
-                        
-                        // Remove processed samples (keep overlap)
-                        val samplesToRemove = chunkSamples - overlapSamples
-                        repeat(samplesToRemove) {
-                            if (audioChunk.isNotEmpty()) {
-                                audioChunk.removeAt(0)
-                            }
+
+                val samplesRead =
+                    record.read(
+                        audioBuffer,
+                        0,
+                        audioBuffer.size
+                    )
+
+                if (samplesRead < 0) {
+
+                    Timber.e(
+                        "❌ AudioRecord.read() error: $samplesRead"
+                    )
+
+                    break
+                }
+
+                if (samplesRead == 0) {
+                    delay(10)
+                    continue
+                }
+
+                /*
+                 * -----------------------------------------------------
+                 * Store samples
+                 * -----------------------------------------------------
+                 */
+
+                for (i in 0 until samplesRead) {
+                    audioChunk.add(audioBuffer[i])
+                }
+
+
+                /*
+                 * -----------------------------------------------------
+                 * Process once we have 6 seconds
+                 * -----------------------------------------------------
+                 */
+
+                if (audioChunk.size >= chunkSamples) {
+
+                    val chunkToProcess =
+                        audioChunk
+                            .take(chunkSamples)
+                            .toShortArray()
+
+                    Timber.d(
+                        "📦 Processing audio chunk #$chunkId"
+                    )
+
+                    processAudioChunk(
+                        chunkToProcess,
+                        chunkId++
+                    )
+
+
+                    /*
+                     * Keep 500 ms overlap.
+                     */
+
+                    val samplesToRemove =
+                        chunkSamples - overlapSamples
+
+                    repeat(samplesToRemove) {
+
+                        if (audioChunk.isNotEmpty()) {
+                            audioChunk.removeAt(0)
                         }
                     }
                 }
-                
-                // Small delay to prevent excessive CPU usage
+
+                /*
+                 * Small delay prevents a tight busy loop.
+                 */
+
                 delay(10)
-                
+
+            } catch (e: CancellationException) {
+
+                Timber.d(
+                    "Audio processing coroutine cancelled"
+                )
+
+                throw e
+
             } catch (e: Exception) {
-                Timber.e(e, "Error processing audio stream")
+
+                Timber.e(
+                    e,
+                    "❌ Error processing audio stream"
+                )
+
                 break
             }
         }
-        
-        Timber.d("Audio processing loop ended")
+
+        Timber.d(
+            "Audio processing loop ended"
+        )
     }
-    
-    private suspend fun processAudioChunk(audioData: ShortArray, chunkId: Int) {
+// ------------------------------------------------------------------------
+
+    private suspend fun processAudioChunk(
+        audioData: ShortArray,
+        chunkId: Int
+    ) {
         try {
+
             if (!isModelLoaded.get() || deepfakeModel == null) {
+                Timber.w(
+                    "AASIST model is not loaded"
+                )
                 return
             }
-            
-            // Monitor audio levels (every 10 chunks)
-            if (chunkId % 10 == 0) {
-                val max = audioData.maxOrNull()?.toFloat() ?: 0f
-                val rms = kotlin.math.sqrt(audioData.map { (it * it).toDouble() }.average()).toFloat()
-                val nonZero = audioData.count { it != 0.toShort() }
-                Timber.d("📊 Chunk $chunkId: max=$max, rms=$rms, nonZero=$nonZero")
-            }
-            
-            // Generate 3-channel features (MelSpec, MFCC, LFCC)
-            val featuresResult = audioProcessor.generateMultiChannelFeatures(audioData, SAMPLE_RATE)
-            
-            if (featuresResult.error != null) {
-                Timber.w("Feature extraction failed: ${featuresResult.error}")
-                return
-            }
-            
-            // Convert features to PyTorch tensor [1, 3, 64, T]
-            val shape = featuresResult.shape
-            val inputTensor = Tensor.fromBlob(
-                featuresResult.features, 
-                longArrayOf(1, shape[0].toLong(), shape[1].toLong(), shape[2].toLong())
+
+
+            /*
+             * ---------------------------------------------------------
+             * Convert PCM16 -> Float32 waveform
+             * ---------------------------------------------------------
+             *
+             * AudioRecord is now MONO.
+             *
+             * Therefore:
+             *
+             * ShortArray[N]
+             *       ↓
+             * FloatArray[N]
+             *       ↓
+             * Tensor[1,N]
+             */
+
+            val waveform = FloatArray(
+                audioData.size
             )
-            
-            // Run inference
-            val outputTensor = deepfakeModel!!.forward(IValue.from(inputTensor)).toTensor()
-            val output = outputTensor.dataAsFloatArray
-            
-            // Apply sigmoid to convert logits to probabilities (from training code)
-            val sigmoidOutput = output.map { 1.0f / (1.0f + kotlin.math.exp(-it)) }
-            
-            // Interpret results - model outputs single value, > 0.5 means fake
-            val fakeProb = if (sigmoidOutput.isNotEmpty()) sigmoidOutput[0] else 0f
-            val realProb = 1f - fakeProb
-            val isFake = fakeProb > 0.5f
-            
-            val result = DetectionResult(
-                timestamp = System.currentTimeMillis(),
-                isFake = isFake,
-                confidence = fakeProb,
-                audioChunkId = chunkId
+
+            for (i in audioData.indices) {
+
+                waveform[i] =
+                    audioData[i].toFloat() / 32768f
+            }
+
+            /*
+             * ---------------------------------------------------------
+             * Tensor
+             * ---------------------------------------------------------
+             */
+
+            val inputTensor =
+                Tensor.fromBlob(
+                    waveform,
+                    longArrayOf(
+                        1,
+                        waveform.size.toLong()
+                    )
+                )
+
+
+            /*
+             * ---------------------------------------------------------
+             * AASIST inference
+             * ---------------------------------------------------------
+             */
+
+            val startTime =
+                System.nanoTime()
+
+            val output =
+                deepfakeModel!!.forward(
+                    IValue.from(inputTensor)
+                )
+
+
+            /*
+             * ---------------------------------------------------------
+             * Read tuple output
+             *
+             * output[0] = embedding [1,160]
+             * output[1] = logits    [1,2]
+             * ---------------------------------------------------------
+             */
+
+            val tuple =
+                output.toTuple()
+
+            require(tuple.size == 2) {
+                "Unexpected AASIST output count: ${tuple.size}"
+            }
+
+            val logits =
+                tuple[1].toTensor()
+
+            val logitsData =
+                logits.dataAsFloatArray
+
+
+            require(logitsData.size >= 2) {
+                "Unexpected AASIST logits size: ${logitsData.size}"
+            }
+
+
+            /*
+             * ---------------------------------------------------------
+             * Two-class softmax
+             *
+             * NOTE:
+             * class mapping is still provisional.
+             * ---------------------------------------------------------
+             */
+
+            val maxLogit =
+                maxOf(
+                    logitsData[0],
+                    logitsData[1]
+                )
+
+            val expFake =
+                exp(
+                    logitsData[0] - maxLogit
+                )
+
+            val expReal =
+                exp(
+                    logitsData[1] - maxLogit
+                )
+
+            val expSum =
+                expFake + expReal
+
+            val fakeProb =
+                expFake / expSum
+
+            val realProb =
+                expReal / expSum
+
+            val isFake =
+                fakeProb > 0.5f
+
+
+            /*
+             * ---------------------------------------------------------
+             * Timing
+             * ---------------------------------------------------------
+             */
+
+            val processingTimeMs =
+                (
+                        System.nanoTime() -
+                                startTime
+                        ) / 1_000_000
+
+
+            Timber.i(
+                "🧠 AASIST result | " +
+                        "fake=${fakeProb * 100}% | " +
+                        "real=${realProb * 100}% | " +
+                        "isFake=$isFake | " +
+                        "time=${processingTimeMs}ms"
             )
-            
+
+
+            /*
+             * ---------------------------------------------------------
+             * Existing UI/result pipeline
+             * ---------------------------------------------------------
+             */
+
+            val result =
+                DetectionResult(
+                    timestamp =
+                        System.currentTimeMillis(),
+
+                    isFake =
+                        isFake,
+
+                    confidence =
+                        if (isFake) {
+                            fakeProb
+                        } else {
+                            realProb
+                        },
+
+                    audioChunkId =
+                        chunkId,
+
+                    processingTimeMs =
+                        processingTimeMs
+                )
+
             detectionResults.add(result)
-            
-            // Update UI overlay
+
             withContext(Dispatchers.Main) {
                 updateOverlay(result)
             }
-            
-            // Log significant detections
-            if (isFake && fakeProb > 0.7f) {
-                Timber.w("HIGH CONFIDENCE DEEPFAKE DETECTED: ${fakeProb * 100}% (Real: ${realProb * 100}%)")
-            }
-            
-            lastDetectionTime = System.currentTimeMillis()
-            
+
+            lastDetectionTime =
+                System.currentTimeMillis()
+
         } catch (e: Exception) {
-            Timber.e(e, "Error processing audio chunk $chunkId")
+
+            Timber.e(
+                e,
+                "❌ AASIST inference failed for chunk $chunkId"
+            )
         }
     }
-    
+
+// ------------------------------------------------------------------------
+
     /**
      * Analyze raw audio data for deepfake detection
-     * 
+     *
      * @param audioData Raw 16-bit PCM audio data (stereo interleaved)
      * @param sampleRate Sample rate of the audio (default: 16000 Hz)
      * @param audioLengthMs Duration of the audio in milliseconds (for metadata)
      * @return AudioAnalysisResult with detection results and metadata
      */
     suspend fun analyzeRawAudio(
-        audioData: ShortArray, 
+        audioData: ShortArray,
         sampleRate: Int = SAMPLE_RATE,
         audioLengthMs: Long = -1L
     ): AudioAnalysisResult {
         val startTime = System.currentTimeMillis()
-        
+
         return withContext(Dispatchers.IO) {
             try {
                 // Check if model is loaded
@@ -625,7 +880,7 @@ class DeepfakeDetectionService : Service() {
                         error = "Model not loaded. Please start the service first."
                     )
                 }
-            
+
                 // Validate input
                 if (audioData.isEmpty()) {
                     return@withContext AudioAnalysisResult(
@@ -912,24 +1167,51 @@ class DeepfakeDetectionService : Service() {
                 if (enabled) {
                     // Store original device before changing
                     originalCommunicationDevice = audioManager.communicationDevice
-                    
+
                     // Find built-in speaker
                     val devices = audioManager.availableCommunicationDevices
-                    val speaker = devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                    
+
+                    val speaker = devices.find {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+
                     if (speaker != null) {
-                        val success = audioManager.setCommunicationDevice(speaker)
+
+                        val success =
+                            audioManager.setCommunicationDevice(speaker)
+
                         if (success) {
-                            Timber.d("✅ Modern speakerphone enabled successfully")
+
+                            Timber.d(
+                                "✅ Modern speakerphone enabled successfully"
+                            )
+
+                            // Verify what Android actually selected
+                            val currentDevice =
+                                audioManager.communicationDevice
+
+                            Timber.i(
+                                "🔊 CURRENT COMMUNICATION DEVICE: " +
+                                        "type=${currentDevice?.type}, " +
+                                        "name=${currentDevice?.productName}"
+                            )
+
                         } else {
-                            Timber.w("❌ Failed to set communication device to speaker")
-                            // Fallback to deprecated method
+
+                            Timber.w(
+                                "❌ Failed to set communication device to speaker"
+                            )
+
                             @Suppress("DEPRECATION")
                             audioManager.isSpeakerphoneOn = enabled
                         }
+
                     } else {
-                        Timber.w("❌ Built-in speaker not found in available devices")
-                        // Fallback to deprecated method
+
+                        Timber.w(
+                            "❌ Built-in speaker not found in available devices"
+                        )
+
                         @Suppress("DEPRECATION")
                         audioManager.isSpeakerphoneOn = enabled
                     }
@@ -1052,7 +1334,9 @@ class DeepfakeDetectionService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
     }
-    
+
+    // ---------------------------------------------------------------------------------------------
+
     override fun onDestroy() {
         super.onDestroy()
         stopAudioMonitoring()
