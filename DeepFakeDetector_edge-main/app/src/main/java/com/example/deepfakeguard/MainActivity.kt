@@ -140,31 +140,35 @@ class MainActivity : AppCompatActivity(), ServiceConnection {
         val prefs = getSharedPreferences("deepfake_guard", Context.MODE_PRIVATE)
         switchAutoStart.isChecked = prefs.getBoolean("auto_start", false)
     }
-    
+
     private fun setupClickListeners() {
+
         btnToggleService.setOnClickListener {
             toggleService()
         }
-        
+
         btnPermissions.setOnClickListener {
             requestPermissions()
         }
-        
+
         btnSettings.setOnClickListener {
             showSettingsDialog()
         }
-        
+
         switchAutoStart.setOnCheckedChangeListener { _, isChecked ->
-            // Save auto-start preference
-            getSharedPreferences("deepfake_guard", Context.MODE_PRIVATE)
-                .edit().putBoolean("auto_start", isChecked).apply()
+            getSharedPreferences(
+                "deepfake_guard",
+                Context.MODE_PRIVATE
+            )
+                .edit()
+                .putBoolean("auto_start", isChecked)
+                .apply()
         }
-        
-        // Audio file analysis click listeners
+
         btnSelectAudioFile.setOnClickListener {
             selectAudioFile()
         }
-        
+
         btnAnalyzeFile.setOnClickListener {
             analyzeSelectedAudioFile()
         }
@@ -332,26 +336,27 @@ class MainActivity : AppCompatActivity(), ServiceConnection {
             Toast.makeText(this, "Failed to start service: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
-    
+
+    private fun bindToService() {
+        val intent = Intent(this, DeepfakeDetectionService::class.java)
+        bindService(intent, this, Context.BIND_AUTO_CREATE)
+    }
+
+    // ------------------------------------------------------------------------
     private fun stopMonitoringService() {
         val intent = Intent(this, DeepfakeDetectionService::class.java)
         stopService(intent)
-        
+
         if (isServiceBound) {
             unbindService(this)
             isServiceBound = false
             deepfakeService = null
         }
-        
+
         Toast.makeText(this, "Stopping deepfake monitoring...", Toast.LENGTH_SHORT).show()
         updateServiceStatus()
     }
-    
-    private fun bindToService() {
-        val intent = Intent(this, DeepfakeDetectionService::class.java)
-        bindService(intent, this, Context.BIND_AUTO_CREATE)
-    }
-    
+
     override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
         val binder = service as DeepfakeDetectionService.LocalBinder
         deepfakeService = binder.getService()
